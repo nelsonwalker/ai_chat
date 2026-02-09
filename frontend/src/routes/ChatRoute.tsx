@@ -14,6 +14,14 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
+function scrollToBottom(viewport: HTMLDivElement | null, behavior: ScrollBehavior = "auto") {
+  if (!viewport) return;
+  viewport.scrollTo({
+    top: viewport.scrollHeight,
+    behavior,
+  });
+}
+
 type Message = {
   id: number;
   role: "user" | "assistant" | "system";
@@ -52,20 +60,27 @@ export function ChatRoute() {
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
 
-  async function loadChat() {
+  async function loadChat(options: { showLoader?: boolean } = {}) {
+    const { showLoader = true } = options;
     if (!Number.isFinite(chatId)) return;
-    setLoading(true);
+    if (showLoader) {
+      setLoading(true);
+    }
     const res = await fetch(`/api/chats/${chatId}`);
     if (!res.ok) {
       setChat(null);
-      setLoading(false);
+      if (showLoader) {
+        setLoading(false);
+      }
       return;
     }
     const data = (await res.json()) as ChatResponse;
     setChat(data);
-    setLoading(false);
+    if (showLoader) {
+      setLoading(false);
+    }
     queueMicrotask(() =>
-      viewportRef.current?.scrollTo({ top: 999999, behavior: "auto" })
+      scrollToBottom(viewportRef.current, "auto")
     );
   }
 
@@ -181,7 +196,7 @@ export function ChatRoute() {
     });
 
     queueMicrotask(() =>
-      viewportRef.current?.scrollTo({ top: 999999, behavior: "smooth" })
+      scrollToBottom(viewportRef.current, "auto")
     );
 
     try {
@@ -234,7 +249,7 @@ export function ChatRoute() {
           };
         });
 
-        viewportRef.current?.scrollTo({ top: 999999, behavior: "auto" });
+        scrollToBottom(viewportRef.current, "auto"); 
       }
 
       // Finalize as complete
@@ -248,8 +263,12 @@ export function ChatRoute() {
         };
       });
 
-      // Refresh from server to replace temp ids with real ids + persisted status
-      await loadChat();
+      // Refresh from server to replace temp ids with real ids + persisted status.
+      // Avoid toggling the global `loading` state here so the ScrollArea
+      // isn't unmounted/remounted (which would reset scroll to the top).
+      await loadChat({ showLoader: false });
+
+      queueMicrotask(() => scrollToBottom(viewportRef.current, "auto"));
 
       // Tell sidebar to reload list (title may have changed)
       window.dispatchEvent(new Event("chats:refresh"));

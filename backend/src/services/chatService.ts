@@ -243,7 +243,6 @@ export async function streamAssistantReply(opts: {
     opts.writeToClient(`\n[ERROR] ${errorMessage}\n`);
   };
 
-  // Stream from OpenRouter
   try {
     await openRouterStreamChat({
       apiKey: opts.apiKey,

@@ -78,6 +78,11 @@ export function AppShellLayout() {
   useEffect(() => {
     const handler = () => loadChats();
     window.addEventListener("chats:refresh", handler);
+
+    // Load chats on initial mount so the sidebar is populated
+    // when the app is first opened or the page is refreshed.
+    loadChats();
+
     return () => window.removeEventListener("chats:refresh", handler);
   }, []);
 
