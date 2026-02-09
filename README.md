@@ -38,6 +38,9 @@ npm run dev
 
 #### Database
 
+<img width="1068" height="640" alt="ai_chat_schema" src="https://github.com/user-attachments/assets/ff7dea82-99f1-4f24-940f-8eb8d20431a1" />
+
+
 - included `users` table for future extensibility with auth
 - included `models` table which allows user to see which model they're using, switch between models, and add / remove models
 - `messages` table consists of messages from both user and AI assistant. The `status`, `error_code`, and `error_message` are needed for when something goes wrong, e.g. many models have rate limits or just don't work
