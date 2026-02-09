@@ -7,6 +7,7 @@ to setup locally:
 ```bash
 cd backend
 docker compose up -d
+npm install
 npx drizzle-kit push
 ```
 
@@ -38,8 +39,15 @@ $ curl -N http://localhost:3000/api/chats/1/messages \
   -d '{"content":"how are you today my good sir?"}'
 ```
 
+## Frontend Setup
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
 ## TODO
 
-- [ ] make frontend
 - [ ] refactor chats.ts (currently too large and hard to read)
 - [ ] improve formatting

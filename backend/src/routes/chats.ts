@@ -34,6 +34,7 @@ const chatsRoutes: FastifyPluginAsync = async (fastify) => {
             messages: {
                     orderBy: (t, { asc }) => asc(t.id),
                 },
+            model: true,
             },
         });
 
@@ -41,7 +42,16 @@ const chatsRoutes: FastifyPluginAsync = async (fastify) => {
             return reply.status(404).send({ error: "Chat not found" });
         }
 
-        return chat;
+        return {
+            ...chat,
+            model: chat.model && !Array.isArray(chat.model)
+                ? {
+                    id: chat.model.id,
+                    name: chat.model.name,
+                    openrouterIdentifier: chat.model.openrouterIdentifier,
+                }
+                : null,
+        };
     });
 
     // POST /api/chats - create a new chat
@@ -125,6 +135,13 @@ const chatsRoutes: FastifyPluginAsync = async (fastify) => {
         columns: { id: true, modelId: true },
         });
         if (!chat) return reply.code(404).send({ error: "Chat not found" });
+
+        // Check if this is the first message
+        const existingMessages = await db.query.messages.findMany({
+        where: eq(messages.chatId, chatId),
+        columns: { id: true },
+        });
+        const isFirstMessage = existingMessages.length === 0;
 
         // Resolve model identifier
         let modelIdentifier = process.env.OPENROUTER_MODEL;
@@ -308,6 +325,57 @@ const chatsRoutes: FastifyPluginAsync = async (fastify) => {
         await db.update(chats).set({ updatedAt: sql`now()` }).where(eq(chats.id, chatId));
         };
 
+        const generateTitle = async () => {
+        if (!isFirstMessage) return;
+
+        try {
+            const titleResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:3000",
+                "X-Title": "AI Chat (take-home)",
+            },
+            body: JSON.stringify({
+                model: modelIdentifier,
+                messages: [
+                {
+                    role: "system",
+                    content: "Generate a short, concise title (maximum 5 words) for this conversation based on the user's first message. Return only the title, nothing else.",
+                },
+                {
+                    role: "user",
+                    content: userContent,
+                },
+                ],
+                stream: false,
+            }),
+            });
+
+            if (titleResponse.ok) {
+            const titleData = await titleResponse.json();
+            const generatedTitle = titleData?.choices?.[0]?.message?.content?.trim();
+            if (generatedTitle) {
+                // Clean up the title - remove quotes if present, limit length
+                let cleanTitle = generatedTitle.replace(/^["']|["']$/g, "").trim();
+                if (cleanTitle.length > 100) {
+                cleanTitle = cleanTitle.substring(0, 100);
+                }
+                if (cleanTitle) {
+                await db
+                    .update(chats)
+                    .set({ title: cleanTitle })
+                    .where(eq(chats.id, chatId));
+                }
+            }
+            }
+        } catch (error) {
+            // Silently fail - title generation is not critical
+            console.error("Failed to generate title:", error);
+        }
+        };
+
         const finalizeComplete = async () => {
         await db
             .update(messages)
@@ -320,6 +388,9 @@ const chatsRoutes: FastifyPluginAsync = async (fastify) => {
             .where(eq(messages.id, assistantMsg.id));
 
         await db.update(chats).set({ updatedAt: sql`now()` }).where(eq(chats.id, chatId));
+
+        // Generate title if this is the first message
+        await generateTitle();
         };
 
         try {
@@ -344,6 +415,7 @@ const chatsRoutes: FastifyPluginAsync = async (fastify) => {
 
                 if (data === "[DONE]") {
                 await persistContent(true);
+                await generateTitle();
                 reply.raw.end();
                 return;
                 }
@@ -410,230 +482,118 @@ const chatsRoutes: FastifyPluginAsync = async (fastify) => {
         }
     }
     );
+    fastify.patch<{
+    Params: { id: string };
+    Body: { modelId: number | null };
+    }>(
+    "/:id",
+    {
+        schema: {
+        params: {
+            type: "object",
+            properties: { id: { type: "string", pattern: "^[0-9]+$" } },
+            required: ["id"],
+            additionalProperties: false,
+        },
+        body: {
+            type: "object",
+            properties: { modelId: { type: ["number", "null"] } },
+            required: ["modelId"],
+            additionalProperties: false,
+        },
+        },
+    },
+    async (request, reply) => {
+        const chatId = Number(request.params.id);
+        if (Number.isNaN(chatId)) return reply.code(400).send({ error: "Invalid chat id" });
 
+        const userId = 1; // TODO: replace with auth user id later
 
-    // POST /api/chats/:id/messages
-//     fastify.post<{
-//     Params: { id: string };
-//     Body: { content: string };
-//   }>(
-//     "/:id/messages",
-//     {
-//       schema: {
-//         params: {
-//           type: "object",
-//           properties: { id: { type: "string", pattern: "^[0-9]+$" } },
-//           required: ["id"],
-//           additionalProperties: false,
-//         },
-//         body: {
-//           type: "object",
-//           properties: { content: { type: "string", minLength: 1 } },
-//           required: ["content"],
-//           additionalProperties: false,
-//         },
-//       },
-//     },
-//     async (request, reply) => {
-//       const chatId = Number(request.params.id);
-//       if (Number.isNaN(chatId)) return reply.code(400).send({ error: "Invalid chat id" });
+        const modelId = request.body.modelId;
 
-//       const userContent = request.body.content.trim();
-//       if (!userContent) return reply.code(400).send({ error: "Content cannot be empty" });
+        // Validate model exists if not null
+        if (modelId !== null) {
+        const model = await db.query.models.findFirst({
+            where: eq(models.id, modelId),
+            columns: { id: true },
+        });
+        if (!model) return reply.code(400).send({ error: "Invalid modelId" });
+        }
 
-//       const apiKey = process.env.OPENROUTER_API_KEY;
-//       if (!apiKey) return reply.code(500).send({ error: "Missing OPENROUTER_API_KEY" });
+        // Ensure chat exists and belongs to user
+        const chat = await db.query.chats.findFirst({
+        where: eq(chats.id, chatId),
+        columns: { id: true, userId: true },
+        });
+        if (!chat) return reply.code(404).send({ error: "Chat not found" });
+        if (chat.userId !== userId) return reply.code(403).send({ error: "Forbidden" });
 
-//       // 1) Load chat (and model if you store it on chat)
-//       const chat = await db.query.chats.findFirst({
-//         where: eq(chats.id, chatId),
-//         columns: { id: true, modelId: true },
-//       });
-//       if (!chat) return reply.code(404).send({ error: "Chat not found" });
+        const [updated] = await db
+        .update(chats)
+        .set({
+            modelId,
+            updatedAt: sql`now()`,
+        })
+        .where(eq(chats.id, chatId))
+        .returning({
+            id: chats.id,
+            title: chats.title,
+            modelId: chats.modelId,
+            updatedAt: chats.updatedAt,
+            createdAt: chats.createdAt,
+        });
 
-//       // Resolve model identifier
-//       let modelIdentifier = process.env.OPENROUTER_MODEL; // fallback
-//       if (chat.modelId) {
-//         const modelRow = await db.query.models.findFirst({
-//           where: eq(models.id, chat.modelId),
-//           columns: { openrouterIdentifier: true },
-//         });
-//         if (modelRow?.openrouterIdentifier) modelIdentifier = modelRow.openrouterIdentifier;
-//       }
-//       if (!modelIdentifier) {
-//         return reply.code(500).send({ error: "No model configured (OPENROUTER_MODEL or chat.modelId)" });
-//       }
+        return reply.send(updated);
+    }
+    );
 
-//       // 2) Insert the user's message
-//       const [userMsg] = await db
-//         .insert(messages)
-//         .values({
-//           chatId,
-//           role: "user",
-//           content: userContent,
-//           parentMessageId: null,
-//         })
-//         .returning({
-//           id: messages.id,
-//           chatId: messages.chatId,
-//           role: messages.role,
-//           content: messages.content,
-//           createdAt: messages.createdAt,
-//         });
+    // DELETE /api/chats/:id - delete a chat
+    fastify.delete<{ Params: { id: string } }>(
+    "/:id",
+    {
+        schema: {
+        params: {
+            type: "object",
+            properties: { id: { type: "string", pattern: "^[0-9]+$" } },
+            required: ["id"],
+            additionalProperties: false,
+        },
+        },
+    },
+    async (request, reply) => {
+        const chatId = Number(request.params.id);
+        if (Number.isNaN(chatId)) {
+        return reply.code(400).send({ error: "Invalid chat id" });
+        }
 
-//       // 3) Create an assistant placeholder message we will update as tokens stream in
-//       const [assistantMsg] = await db
-//         .insert(messages)
-//         .values({
-//           chatId,
-//           role: "assistant",
-//           content: "",
-//           parentMessageId: userMsg.id,
-//         })
-//         .returning({ id: messages.id });
+        const userId = 1; // TODO: replace with auth-derived userId
 
-//       // 4) Build full chat history for OpenRouter (ordered)
-//       const history = await db.query.messages.findMany({
-//         where: eq(messages.chatId, chatId),
-//         orderBy: (fields, { asc }) => [asc(fields.id)],
-//         columns: { role: true, content: true },
-//       });
+        // Ensure chat exists and belongs to user
+        const chat = await db.query.chats.findFirst({
+        where: eq(chats.id, chatId),
+        columns: { id: true, userId: true },
+        });
 
-//       // 5) Prepare streaming response to browser (chunked text)
-//       reply.raw.setHeader("Content-Type", "text/plain; charset=utf-8");
-//       reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
-//       reply.raw.setHeader("Connection", "keep-alive");
-//       reply.raw.flushHeaders?.(); // ok if available
-//       reply.hijack(); // we will manage the stream manually
+        if (!chat) {
+        return reply.code(404).send({ error: "Chat not found" });
+        }
 
-//       const abortController = new AbortController();
+        if (chat.userId !== userId) {
+        return reply.code(403).send({ error: "Forbidden" });
+        }
 
-//       // If client disconnects, cancel upstream
-//       request.raw.on("close", () => {
-//         abortController.abort();
-//       });
+        const [deleted] = await db
+        .delete(chats)
+        .where(eq(chats.id, chatId))
+        .returning({ id: chats.id });
 
-//       // 6) Call OpenRouter with stream:true (SSE stream) :contentReference[oaicite:3]{index=3}
-//       let upstream: Response;
-//       try {
-//         upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-//           method: "POST",
-//           headers: {
-//             Authorization: `Bearer ${apiKey}`,
-//             "Content-Type": "application/json",
-//             // Optional but recommended for OpenRouter rankings/telemetry :contentReference[oaicite:4]{index=4}
-//             "HTTP-Referer": "http://localhost:3000",
-//             "X-Title": "AI Chat (take-home)",
-//           },
-//           body: JSON.stringify({
-//             model: modelIdentifier,
-//             messages: history,
-//             stream: true,
-//           }),
-//           signal: abortController.signal,
-//         });
-//       } catch (e: any) {
-//         // If fetch itself fails
-//         reply.raw.end();
-//         return;
-//       }
+        return reply.send({
+        ok: true,
+        deletedId: deleted.id,
+        });
+    }
+    );
 
-//       // If OpenRouter errors before any tokens, it returns normal JSON + status :contentReference[oaicite:5]{index=5}
-//       if (!upstream.ok || !upstream.body) {
-//         const text = await upstream.text().catch(() => "");
-//         reply.raw.write(`\n[Upstream error ${upstream.status}] ${text}\n`);
-//         reply.raw.end();
-//         return;
-//       }
-
-//       const decoder = new TextDecoder();
-//       let buffer = "";
-//       let assistantText = "";
-
-//       // Throttle DB updates
-//       let lastPersist = Date.now();
-//       const persistEveryMs = 250;
-
-//       const persist = async (final = false) => {
-//         const now = Date.now();
-//         if (!final && now - lastPersist < persistEveryMs) return;
-//         lastPersist = now;
-
-//         await db
-//           .update(messages)
-//           .set({ content: assistantText })
-//           .where(eq(messages.id, assistantMsg.id));
-
-//         await db
-//           .update(chats)
-//           .set({ updatedAt: sql`now()` })
-//           .where(eq(chats.id, chatId));
-//       };
-
-//       try {
-//         // 7) Parse SSE from OpenRouter; ignore comment payloads :contentReference[oaicite:6]{index=6}
-//         const reader = upstream.body.getReader();
-
-//         while (true) {
-//           const { value, done } = await reader.read();
-//           if (done) break;
-
-//           buffer += decoder.decode(value, { stream: true });
-
-//           // SSE events are separated by a blank line
-//           let idx;
-//           while ((idx = buffer.indexOf("\n\n")) !== -1) {
-//             const eventBlock = buffer.slice(0, idx);
-//             buffer = buffer.slice(idx + 2);
-
-//             // ignore comment-only events like ": OPENROUTER PROCESSING" :contentReference[oaicite:7]{index=7}
-//             if (eventBlock.startsWith(":")) continue;
-
-//             const dataLines = extractSseDataLines(eventBlock);
-//             for (const data of dataLines) {
-//               if (!data) continue;
-//               if (data === "[DONE]") {
-//                 await persist(true);
-//                 reply.raw.end();
-//                 return;
-//               }
-
-//               let json: any;
-//               try {
-//                 json = JSON.parse(data);
-//               } catch {
-//                 continue;
-//               }
-
-//               // OpenAI-style delta content
-//               const delta = json?.choices?.[0]?.delta?.content;
-//               if (typeof delta === "string" && delta.length) {
-//                 assistantText += delta;
-//                 reply.raw.write(delta); // stream to client immediately
-//                 await persist(false);
-//               }
-
-//               // Mid-stream errors can be sent as SSE events too :contentReference[oaicite:8]{index=8}
-//               if (json?.error) {
-//                 reply.raw.write(`\n[Upstream stream error] ${JSON.stringify(json.error)}\n`);
-//                 await persist(true);
-//                 reply.raw.end();
-//                 return;
-//               }
-//             }
-//           }
-//         }
-
-//         // stream ended without [DONE]
-//         await persist(true);
-//         reply.raw.end();
-//       } catch (e: any) {
-//         // Abort is normal if client disconnects; cancellation support depends on provider :contentReference[oaicite:9]{index=9}
-//         await persist(true).catch(() => {});
-//         reply.raw.end();
-//       }
-//     }
-//   );
 };
 
 function extractSseDataLines(sseEvent: string): string[] {
