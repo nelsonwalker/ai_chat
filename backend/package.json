@@ -1,0 +1,18 @@
+{
+  "dependencies": {
+    "dotenv": "^17.2.4",
+    "drizzle-orm": "^0.45.1",
+    "fastify": "^5.7.4",
+    "pg": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.2",
+    "@types/pg": "^8.16.0",
+    "drizzle-kit": "^0.31.8",
+    "tsx": "^4.21.0"
+  },
+  "scripts": {
+    "seed": "tsx src/db/seed.ts",
+    "dev": "tsx watch src/server.ts"
+  }
+}
