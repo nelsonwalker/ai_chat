@@ -250,6 +250,9 @@ export function ChatRoute() {
 
       // Refresh from server to replace temp ids with real ids + persisted status
       await loadChat();
+
+      // Tell sidebar to reload list (title may have changed)
+      window.dispatchEvent(new Event("chats:refresh"));
     } finally {
       setSending(false);
     }

@@ -76,7 +76,9 @@ export function AppShellLayout() {
   }
 
   useEffect(() => {
-    loadChats();
+    const handler = () => loadChats();
+    window.addEventListener("chats:refresh", handler);
+    return () => window.removeEventListener("chats:refresh", handler);
   }, []);
 
   return (
